@@ -1,0 +1,11 @@
+[package]
+name = "key-fall"
+version = "0.1.0"
+authors = ["Joël Lupien (Jojolepro) <jojolepromain@gmail.com>"]
+
+[dependencies]
+midir = { version = "0.5", features = ["jack"] }
+#nom-midi = "0.2.0"
+ghakuf = "0.5"
+amethyst = { git = "https://github.com/amethyst/amethyst", branch = "develop" }
+log = "*"
