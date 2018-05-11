@@ -4,8 +4,10 @@ version = "0.1.0"
 authors = ["Joël Lupien (Jojolepro) <jojolepromain@gmail.com>"]
 
 [dependencies]
-midir = { version = "0.5", features = ["jack"] }
+#midir = { version = "0.5", features = ["jack"] }
+midir = { version = "0.5" }
 #nom-midi = "0.2.0"
 ghakuf = "0.5"
 amethyst = { git = "https://github.com/amethyst/amethyst", branch = "develop" }
 log = "*"
+amethyst-extra = { path = "../amethyst-extra/" }
