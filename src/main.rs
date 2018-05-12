@@ -51,42 +51,66 @@ pub struct MidiFileHandler{
     song: MidiSong,
     delta_accum: f64,
     current_bpm: f64,
-    tpm: u16,
+    resolution: u16,
+    signature: f64,
+    base_offset: f64,
 }
 
 impl MidiFileHandler{
     pub fn new()->Self{
-        MidiFileHandler{
+        let mut h = MidiFileHandler{
             song: MidiSong::default(),
             delta_accum: 0.0,
             current_bpm: 120.0,
-            tpm: 0,
-        }
+            resolution: 0,
+            signature: 1.0,
+            base_offset: 3.0,
+        };
+        h.reset_delta_accum();
+        h
     }
     fn end_note(&mut self, note: u8,time: f64){
-        if let Some(mut l) = self.song.notes.iter_mut().filter(|n| n.key == note).last().as_mut(){
+        if let Some(mut l) = self.song.notes.iter_mut().filter(|n| n.key == note && n.end == 0.0).last().as_mut(){
             if l.end == 0.0{
                 l.end = time;
             }
+        }else{
+            error!("Could not add NoteOff event to song. Midi file integrity check failed on note key {} at time {}.",note,time);
         }
     }
 
     fn time_for(&mut self, delta: u32)->f64{
-        let microsec_per_beat = 60.0 * 1000000.0 / self.current_bpm;
-        let microsec_per_tick = microsec_per_beat / self.tpm as f64;
-        let sec_per_tick = microsec_per_tick / 1000000.0;
-        let offset = sec_per_tick * delta as f64;
+        //let sec_per_beat = 60.0 / self.current_bpm;
+        //let sec_per_tick = sec_per_beat / self.resolution as f64;
+        let sec_per_tick = 60.0 / (self.current_bpm * self.resolution as f64);
+        let offset = sec_per_tick * delta as f64 /* self.signature*/;
+        //println!("offset: {}",offset);
         self.delta_accum += offset;
         self.delta_accum
+    }
+    fn reset_delta_accum(&mut self){
+        self.delta_accum = self.base_offset;
     }
 }
 
 impl Handler for MidiFileHandler {
     fn header(&mut self, format: u16, track: u16, time_base: u16) {
-        self.tpm = time_base;
+        self.resolution = time_base;
     }
     fn meta_event(&mut self, delta_time: u32, event: &MetaEvent, data: &Vec<u8>) {
-        // TODO: time changes
+        match event{
+            &MetaEvent::SetTempo => {
+                // TODO: support other time signatures than */4
+                let b1 = (data[0] as i32) << 16;
+                let b2 = (data[1] as i32) << 8;
+                let b3 = data[2] as i32;
+                let microsec_per_quarter = b1 + b2 + b3;
+                self.current_bpm = (60_000_000 / microsec_per_quarter) as f64;
+            },
+            &MetaEvent::TimeSignature => self.signature = data[0] as f64 / data[1] as f64,
+            &MetaEvent::KeySignature => error!("Midi Key Signature meta event not supported yet!"),
+            _ => {},
+        }
     }
     fn midi_event(&mut self, delta_time: u32, event: &MidiEvent) {
         //println!("Midi event: {:?} at delta time {}",event,delta_time);
@@ -112,6 +136,7 @@ impl Handler for MidiFileHandler {
     fn sys_ex_event(&mut self, delta_time: u32, event: &SysExEvent, data: &Vec<u8>) {
     }
     fn track_change(&mut self) {
+        self.reset_delta_accum();
     }
 }
 
@@ -176,7 +201,8 @@ impl State for GameState{
     fn on_start(&mut self, mut world: &mut World) {
         println!("Sample midi file read test");
         //let path = Path::new("test.mid");
-        let path = Path::new("Sayonara Heaven.mid");
+        let path = Path::new("xi - akasha.mid");
+        //let path = Path::new("Sayonara Heaven.mid");
         let mut handler = MidiFileHandler::new();
         {
             let mut reader = Reader::new(
@@ -185,10 +211,13 @@ impl State for GameState{
             ).unwrap();
             let res = reader.read();
         }
+
+        println!("{:?}",handler);
+
         world.add_resource(handler);
 
 
-        let mesh = gen_rectangle_mesh(0.1,0.1,&world.read_resource(),&world.read_resource());
+        let mesh = gen_rectangle_mesh(1.0,1.0,&world.read_resource(),&world.read_resource());
         let color = world.read_resource::<Loader>().load_from_data([0.1,0.5,0.3,1.0].into(), (), &world.read_resource());
 
 
@@ -280,22 +309,25 @@ impl<'a> System<'a> for NoteSpawnSystem {
                        WriteStorage<'a,Material>,
                        WriteStorage<'a,NoteComponent>,);
     fn run(&mut self, (entities,time, asset, midi, mut gt, mut tr, mut dat, mut meshes, mut mats, mut nc): Self::SystemData) {
-        let lower = time.absolute_time_seconds() - time.delta_seconds() as f64;
-        let upper = time.absolute_time_seconds();
+        let lower = time.absolute_time_seconds() - time.delta_seconds() as f64 + 1.0;
+        let upper = time.absolute_time_seconds() + 1.0;
         for n in &midi.song.notes{
             if n.start < upper{
                 if n.start >= lower{
-                    println!("Spawning note: {:?}, scheduled for destruction at: {}",n,time.absolute_time_seconds() + n.end + 0.1);
+                    println!("Spawning note: {:?}, scheduled for destruction at: {}, at time: {}",n,n.end + 0.1,time.absolute_time_seconds());
                     let e = entities.create();
                     gt.insert(e,GlobalTransform::default());
-                    tr.insert(e,Transform::default());
-                    dat.insert(e,DestroyAtTime{ time: time.absolute_time_seconds() + n.end + 0.1 });
+                    let mut t = Transform::default();
+                    t.scale.x = 0.01;
+                    t.scale.y = ((n.end - n.start) / 1.0) as f32;
+                    tr.insert(e,t);
+                    dat.insert(e,DestroyAtTime{ time: n.end + 0.1 });
                     meshes.insert(e,asset.mesh.clone());
                     mats.insert(e,asset.mat.clone());
                     nc.insert(e,NoteComponent{key: n.key,time: n.start});
                 }
             }else{
-                break;
+                //break;
             }
         }
     }
@@ -306,14 +338,13 @@ pub struct NoteMoveSystem;
 impl<'a> System<'a> for NoteMoveSystem {
     type SystemData = (
         Read<'a, Time>,
-        ReadExpect<'a, MidiFileHandler>,
         WriteStorage<'a,Transform>,
         ReadStorage<'a,NoteComponent>);
-    fn run(&mut self, (time,midi,mut tr, nc): Self::SystemData) {
+    fn run(&mut self, (time,mut tr, nc): Self::SystemData) {
         for (mut tr, nc) in (&mut tr,&nc).join(){
-            tr.translation.x = (nc.key as f32 - 50.0) / 30.0;
+            tr.translation.x = nc.key as f32 / 100.0;
             // 1.0 = scroll speed.
-            tr.translation.y = (nc.time + (nc.time - time.absolute_time_seconds()) / 1.0) as f32;
+            tr.translation.y = ((nc.time - time.absolute_time_seconds()) / 1.0) as f32 + tr.scale.y / 2.0;
         }
     }
 }
@@ -328,7 +359,6 @@ fn main() {
 
     let pipe = Pipeline::build().with_stage(
         Stage::with_backbuffer()
-            //.clear_target([255.0, 105.0, 180.0, 1.0], 1.0)
             .clear_target([1.0, 0.5, 0.75, 1.0], 1.0)
             .with_pass(DrawFlat::<PosTex>::new()),
     );
@@ -339,8 +369,6 @@ fn main() {
             FrameRateLimitStrategy::SleepAndYield(Duration::from_millis(2)),
             144,
         )
-        //.with_bundle(FPSCounterBundle::new(20))
-        //.expect("Failed to create FPSCounterBundle")
         .with_bundle(InputBundle::<String, String>::new().with_bindings_from_file(&input_path))
         .expect("Failed to load input bindings")
         .with_bundle(AudioBundle::new(|music: &mut Time| None))
@@ -349,6 +377,7 @@ fn main() {
         .expect("Failed to load render bundle")
         .with(NoteSpawnSystem::default(),"note_spawn",&[])
         .with(NoteMoveSystem,"note_move",&["note_spawn"])
+        .with(TimedDestroySystem,"timed_destroy",&[])
         .with_bundle(TransformBundle::new().with_dep(&["note_move"]))
         .expect("Failed to build transform bundle");
     game.build().expect("Failed to build game").run();
