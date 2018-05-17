@@ -8,6 +8,7 @@ authors = ["Joël Lupien (Jojolepro) <jojolepromain@gmail.com>"]
 midir = { version = "0.5" }
 #nom-midi = "0.2.0"
 ghakuf = "0.5"
-amethyst = { git = "https://github.com/amethyst/amethyst", branch = "develop" }
+#amethyst = { git = "https://github.com/amethyst/amethyst", branch = "develop" }
+amethyst = { path = "../amethystwinitfreeze" }
 log = "*"
 amethyst-extra = { path = "../amethyst-extra/" }
