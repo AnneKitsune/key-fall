@@ -4,6 +4,9 @@ extern crate ghakuf;
 extern crate log;
 extern crate amethyst;
 extern crate amethyst_extra;
+#[macro_use]
+extern crate lazy_static;
+
 
 use midir::{MidiInput,Ignore};
 use std::io::{stdout,stdin,Write};
@@ -25,119 +28,24 @@ use amethyst::renderer::{Camera,DisplayConfig, DrawFlat, Pipeline, PosTex, Rende
                          Stage, Projection,Event,Material,MeshHandle,MaterialDefaults};
 use amethyst::shrev::{ReaderId,EventChannel};
 use amethyst::ui::UiEvent;
-use std::time::Duration;
 use amethyst::Application;
 use amethyst_extra::*;
 use amethyst::ecs::prelude::*;
+use amethyst::Error;
 
-#[derive(Default,Debug)]
-pub struct Note{
-    key: u8,
-    channel: u8,
-    start: f64,
-    end: f64,
-    velocity: u8,
-}
+use std::time::Duration;
 
-#[derive(Default,Debug)]
-pub struct MidiSong{
-    length: f64,
-    bpm: f64,
-    notes: Vec<Note>,
-}
+pub mod systems;
+pub mod data;
+pub use systems::graphics::notes::*;
+pub use data::notes::*;
+pub use data::midi::*;
+pub use data::states::*;
 
-#[derive(Debug)]
-pub struct MidiFileHandler{
-    song: MidiSong,
-    delta_accum: f64,
-    current_bpm: f64,
-    resolution: u16,
-    signature: f64,
-    base_offset: f64,
-}
 
-impl MidiFileHandler{
-    pub fn new()->Self{
-        let mut h = MidiFileHandler{
-            song: MidiSong::default(),
-            delta_accum: 0.0,
-            current_bpm: 120.0,
-            resolution: 0,
-            signature: 1.0,
-            base_offset: 3.0,
-        };
-        h.reset_delta_accum();
-        h
-    }
-    fn end_note(&mut self, note: u8,time: f64){
-        if let Some(mut l) = self.song.notes.iter_mut().filter(|n| n.key == note && n.end == 0.0).last().as_mut(){
-            if l.end == 0.0{
-                l.end = time;
-            }
-        }else{
-            error!("Could not add NoteOff event to song. Midi file integrity check failed on note key {} at time {}.",note,time);
-        }
-    }
 
-    fn time_for(&mut self, delta: u32)->f64{
-        //let sec_per_beat = 60.0 / self.current_bpm;
-        //let sec_per_tick = sec_per_beat / self.resolution as f64;
-        let sec_per_tick = 60.0 / (self.current_bpm * self.resolution as f64);
-        let offset = sec_per_tick * delta as f64 /* self.signature*/;
-        //println!("offset: {}",offset);
-        self.delta_accum += offset;
-        self.delta_accum
-    }
-    fn reset_delta_accum(&mut self){
-        self.delta_accum = self.base_offset;
-    }
-}
-
-impl Handler for MidiFileHandler {
-    fn header(&mut self, format: u16, track: u16, time_base: u16) {
-        self.resolution = time_base;
-    }
-    fn meta_event(&mut self, delta_time: u32, event: &MetaEvent, data: &Vec<u8>) {
-        match event{
-            &MetaEvent::SetTempo => {
-                // TODO: support other time signatures than */4
-                let b1 = (data[0] as i32) << 16;
-                let b2 = (data[1] as i32) << 8;
-                let b3 = data[2] as i32;
-                let microsec_per_quarter = b1 + b2 + b3;
-                self.current_bpm = (60_000_000 / microsec_per_quarter) as f64;
-            },
-            &MetaEvent::TimeSignature => self.signature = data[0] as f64 / data[1] as f64,
-            &MetaEvent::KeySignature => error!("Midi Key Signature meta event not supported yet!"),
-            _ => {},
-        }
-    }
-    fn midi_event(&mut self, delta_time: u32, event: &MidiEvent) {
-        //println!("Midi event: {:?} at delta time {}",event,delta_time);
-        let t = self.time_for(delta_time);
-        match event{
-            &NoteOn{ch,note,velocity} => {
-                if velocity == 0 {
-                    self.end_note(note, t);
-                } else {
-                    self.song.notes.push(Note {
-                        key: note,
-                        channel: ch,
-                        start: t,
-                        end: 0.0,
-                        velocity,
-                    });
-                }
-            },
-            &NoteOff{ch,note,velocity} => self.end_note(note,t),
-            _ => {},
-        }
-    }
-    fn sys_ex_event(&mut self, delta_time: u32, event: &SysExEvent, data: &Vec<u8>) {
-    }
-    fn track_change(&mut self) {
-        self.reset_delta_accum();
-    }
+lazy_static! {
+    pub static ref KEYBOARD_EVENTS: EventChannel<MidiEvent> = EventChannel::new();
 }
 
 
@@ -154,8 +62,6 @@ struct MainMenuState{
 struct DeviceChooserState;
 
 struct PauseState;
-
-struct GameState;
 
 
 /*impl State for LoadState{
@@ -197,65 +103,7 @@ struct GameState;
 }*/
 
 
-impl State for GameState{
-    fn on_start(&mut self, mut world: &mut World) {
-        println!("Sample midi file read test");
-        //let path = Path::new("test.mid");
-        let path = Path::new("xi - akasha.mid");
-        //let path = Path::new("Sayonara Heaven.mid");
-        let mut handler = MidiFileHandler::new();
-        {
-            let mut reader = Reader::new(
-                &mut handler,
-                &path,
-            ).unwrap();
-            let res = reader.read();
-        }
-
-        println!("{:?}",handler);
-
-        world.add_resource(handler);
-
-
-        let mesh = gen_rectangle_mesh(1.0,1.0,&world.read_resource(),&world.read_resource());
-        let color = world.read_resource::<Loader>().load_from_data([0.1,0.5,0.3,1.0].into(), (), &world.read_resource());
-
-
-        let mat_defaults = world.read_resource::<MaterialDefaults>().0.clone();
-        let mat = Material {
-            albedo: color.clone(),
-            ..mat_defaults.clone()
-        };
-
-        let ad = AssetData{
-            mesh,
-            mat,
-        };
-
-        world.add_resource(ad);
-
-
-
-        world
-            .create_entity()
-            .with(Camera::from(Projection::orthographic(
-                0.0,
-                1.0,
-                1.0,
-                0.0,
-            )))
-            .with(GlobalTransform(
-                Matrix4::from_translation(Vector3::new(0.0, 0.0, 1.0)).into(),
-            ))
-            .build();
-    }
-
-    fn update(&mut self, mut world: &mut World) -> Trans {
-        Trans::None
-    }
-}
-
-pub struct NoteDebugSystem;
+/*pub struct NoteDebugSystem;
 
 impl<'a> System<'a> for NoteDebugSystem {
     type SystemData = (Read<'a, Time>, ReadExpect<'a, MidiFileHandler>);
@@ -268,93 +116,20 @@ impl<'a> System<'a> for NoteDebugSystem {
             }
         }
     }
-}
+}*/
 
 pub struct AssetData{
     mesh: MeshHandle,
     mat: Material,
 }
 
-pub struct NoteComponent{
-    key: u8,
-    time: f64,
-}
 
-impl Component for NoteComponent{
-    type Storage = DenseVecStorage<Self>;
-}
-
-#[derive(Default)]
-pub struct NoteSpawnSystem{
-    last_spawn: f64,
-}
-
-impl NoteSpawnSystem{
-    pub fn can_spawn(&mut self, time: f64, note_time: f64, last_frame: f64)->bool{
-        // 1.0 = note scroll delay
-        note_time < time - 1.0 && note_time > self.last_spawn
-    }
-}
-
-impl<'a> System<'a> for NoteSpawnSystem {
-    type SystemData = (
-                       Entities<'a>,
-                       Read<'a, Time>,
-                       ReadExpect<'a,AssetData>,
-                       ReadExpect<'a, MidiFileHandler>,
-                       WriteStorage<'a,GlobalTransform>,
-                       WriteStorage<'a,Transform>,
-                       WriteStorage<'a,DestroyAtTime>,
-                       WriteStorage<'a,MeshHandle>,
-                       WriteStorage<'a,Material>,
-                       WriteStorage<'a,NoteComponent>,);
-    fn run(&mut self, (entities,time, asset, midi, mut gt, mut tr, mut dat, mut meshes, mut mats, mut nc): Self::SystemData) {
-        let lower = time.absolute_time_seconds() - time.delta_seconds() as f64 + 1.0;
-        let upper = time.absolute_time_seconds() + 1.0;
-        for n in &midi.song.notes{
-            if n.start < upper{
-                if n.start >= lower{
-                    println!("Spawning note: {:?}, scheduled for destruction at: {}, at time: {}",n,n.end + 0.1,time.absolute_time_seconds());
-                    let e = entities.create();
-                    gt.insert(e,GlobalTransform::default());
-                    let mut t = Transform::default();
-                    t.scale.x = 0.01;
-                    t.scale.y = ((n.end - n.start) / 1.0) as f32;
-                    tr.insert(e,t);
-                    dat.insert(e,DestroyAtTime{ time: n.end + 0.1 });
-                    meshes.insert(e,asset.mesh.clone());
-                    mats.insert(e,asset.mat.clone());
-                    nc.insert(e,NoteComponent{key: n.key,time: n.start});
-                }
-            }else{
-                //break;
-            }
-        }
-    }
-}
-
-pub struct NoteMoveSystem;
-
-impl<'a> System<'a> for NoteMoveSystem {
-    type SystemData = (
-        Read<'a, Time>,
-        WriteStorage<'a,Transform>,
-        ReadStorage<'a,NoteComponent>);
-    fn run(&mut self, (time,mut tr, nc): Self::SystemData) {
-        for (mut tr, nc) in (&mut tr,&nc).join(){
-            tr.translation.x = nc.key as f32 / 100.0;
-            // 1.0 = scroll speed.
-            tr.translation.y = ((nc.time - time.absolute_time_seconds()) / 1.0) as f32 + tr.scale.y / 2.0;
-        }
-    }
-}
-
-fn main() {
+fn main() -> Result<(), Error> {
 
     let path = format!("{}/assets/main/config/display.ron", env!("CARGO_MANIFEST_DIR"));
     let input_path = format!("{}/assets/main/config/input.ron", env!("CARGO_MANIFEST_DIR"));
 
-    let display_config = DisplayConfig::load(path);
+    //let display_config = DisplayConfig::load(path);
 
 
     let pipe = Pipeline::build().with_stage(
@@ -363,24 +138,26 @@ fn main() {
             .with_pass(DrawFlat::<PosTex>::new()),
     );
     //let maps_dir = format!("{}/resources/assets/maps/", env!("CARGO_MANIFEST_DIR"));
-    let game = Application::build("", GameState)
-        .unwrap()
+
+
+    let game_data = GameDataBuilder::default()
+        .with_bundle(InputBundle::<String, String>::new().with_bindings_from_file(&input_path))?
+        .with_bundle(AudioBundle::new(|music: &mut Time| None))?
+        //.with_bundle(RenderBundle::new(pipe, Some(display_config)))
+        .with_basic_renderer(path,DrawFlat::<PosTex>::new(),false)?
+        .with(NoteSpawnSystem::default(),"note_spawn",&[])
+        .with(NoteMoveSystem,"note_move",&["note_spawn"])
+        .with(TimedDestroySystem,"timed_destroy",&[])
+        .with_bundle(TransformBundle::new().with_dep(&["note_move"]))?;
+
+    let game = Application::build("", GameState::new())?
         .with_frame_limit(
             FrameRateLimitStrategy::SleepAndYield(Duration::from_millis(2)),
             144,
         )
-        .with_bundle(InputBundle::<String, String>::new().with_bindings_from_file(&input_path))
-        .expect("Failed to load input bindings")
-        .with_bundle(AudioBundle::new(|music: &mut Time| None))
-        .expect("Failed to build dj bundle")
-        .with_bundle(RenderBundle::new(pipe, Some(display_config)))
-        .expect("Failed to load render bundle")
-        .with(NoteSpawnSystem::default(),"note_spawn",&[])
-        .with(NoteMoveSystem,"note_move",&["note_spawn"])
-        .with(TimedDestroySystem,"timed_destroy",&[])
-        .with_bundle(TransformBundle::new().with_dep(&["note_move"]))
-        .expect("Failed to build transform bundle");
-    game.build().expect("Failed to build game").run();
+        .build(game_data)?
+        .run();
+
 
     /*println!("Sample midi file read test");
     //let path = Path::new("test.mid");
@@ -396,52 +173,15 @@ fn main() {
 
     println!("Midi data: {:?}",handler);
 
-    println!("Midi file read end");
+    println!("Midi file read end");*/
 
 
-    let mut midi_in = MidiInput::new("Key Fall").expect("Failed to create midi input");
-    midi_in.ignore(Ignore::None);
+    // create midi input from state
+    // move to EventChannel<ghakuf::messages::MidiEvent::MidiEvent>
+    // read from the game's systems
 
-
-    println!("Available input ports:");
-    let mut input = String::new();
-    for i in 0..midi_in.port_count() {
-        println!("{}: {}", i, midi_in.port_name(i).unwrap());
-    }
-    print!("Please select input port: ");
-    stdout().flush().unwrap();
-    stdin().read_line(&mut input).unwrap();
-    let in_port: usize = input.trim().parse().unwrap();
-
-    println!("Connecting...");
-    let log_all_bytes = Vec::new(); // We use this as an example custom data to pass into the callback
-    let conn_in = midi_in.connect(in_port, "Midi Input", |stamp, message, log| {
-        // The last of the three callback parameters is the object that we pass in as last parameter of `connect`.
-        if message.len() > 1{
-
-            //println!("{}: {:?} (len = {})", stamp, message, message.len());
-
-            // [1,2,3]
-            // 1 = state. 144 = down, 128 = up
-            // 2 = key.
-            // 3 = velocity. [0,128?] down, 64 up
-
-            let time_secs = stamp as f64 / 1000000.0;
-            println!("Time: {} -> {:?}",time_secs,message);
-        }
-        log.extend_from_slice(message);
-    }, log_all_bytes).expect("Failed to open midi connection.");
-
-
-    // midi event to note
-    // https://github.com/derekdreery/nom-midi-rs/blob/master/src/parser/event/midi.rs
-
-
-    println!("Connection opened.");
-
-    loop{}
-
-    println!("Closing connections");
+    /*println!("Closing connections");
     let (midi_in_, log_all_bytes) = conn_in.close();*/
 
+    Ok(())
 }
